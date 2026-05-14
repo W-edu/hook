@@ -1,47 +1,28 @@
-// Webhook topic groups — keys are the user-facing resource prefix
-export const TOPIC_GROUPS: Record<string, string[]> = {
-  orders: [
-    "ORDERS_CREATE", "ORDERS_UPDATED", "ORDERS_CANCELLED",
-    "ORDERS_FULFILLED", "ORDERS_PAID", "ORDERS_PARTIALLY_FULFILLED",
-    "ORDERS_REFUNDED",
-  ],
-  products: ["PRODUCTS_CREATE", "PRODUCTS_UPDATE", "PRODUCTS_DELETE"],
-  customers: ["CUSTOMERS_CREATE", "CUSTOMERS_UPDATE", "CUSTOMERS_DELETE", "CUSTOMERS_MERGE"],
-  inventory: [
-    "INVENTORY_ITEMS_CREATE", "INVENTORY_ITEMS_UPDATE", "INVENTORY_ITEMS_DELETE",
-    "INVENTORY_LEVELS_CONNECT", "INVENTORY_LEVELS_UPDATE", "INVENTORY_LEVELS_DISCONNECT",
-  ],
-  fulfillments: [
-    "FULFILLMENTS_CREATE", "FULFILLMENTS_UPDATE",
-    "FULFILLMENT_ORDERS_FULFILLMENT_REQUESTED", "FULFILLMENT_ORDERS_CANCELLATION_REQUESTED",
-  ],
-  checkouts: ["CHECKOUTS_CREATE", "CHECKOUTS_UPDATE", "CHECKOUTS_DELETE"],
-  carts: ["CARTS_CREATE", "CARTS_UPDATE"],
-  draft_orders: ["DRAFT_ORDERS_CREATE", "DRAFT_ORDERS_UPDATE", "DRAFT_ORDERS_DELETE"],
-  collections: ["COLLECTIONS_CREATE", "COLLECTIONS_UPDATE", "COLLECTIONS_DELETE"],
-  refunds: ["REFUNDS_CREATE"],
-  disputes: ["DISPUTES_CREATE", "DISPUTES_REDACTED"],
-  app: ["APP_SUBSCRIPTIONS_UPDATE", "APP_PURCHASES_ONE_TIME_UPDATE"],
-};
+const TOPIC_INTROSPECTION = `{ __type(name: "WebhookSubscriptionTopic") { enumValues { name } } }`;
 
-// All topics flat
-const ALL_TOPICS = Object.values(TOPIC_GROUPS).flat();
+export async function fetchAvailableTopics(store: string, token: string): Promise<string[]> {
+  const data = await gql(store, token, TOPIC_INTROSPECTION) as {
+    __type: { enumValues: Array<{ name: string }> };
+  };
+  return data.__type.enumValues.map((v) => v.name);
+}
 
-export function resolveTopics(input: string): string[] {
+export function resolveTopics(input: string, availableTopics: string[]): string[] {
   const normalized = input.toUpperCase();
 
   // Exact match
-  if (ALL_TOPICS.includes(normalized)) return [normalized];
+  if (availableTopics.includes(normalized)) return [normalized];
 
-  // _ALL suffix: e.g. orders_all → all ORDERS_* topics
+  // _ALL suffix: derive group from prefix, e.g. orders_all → all ORDERS_* topics
   if (normalized.endsWith("_ALL")) {
-    const prefix = normalized.slice(0, -4).toLowerCase(); // "orders"
-    const group = TOPIC_GROUPS[prefix];
-    if (group) return group;
-    throw new Error(`Unknown resource "${prefix}". Known: ${Object.keys(TOPIC_GROUPS).join(", ")}`);
+    const prefix = normalized.slice(0, -4); // "ORDERS"
+    const group = availableTopics.filter((t) => t.startsWith(`${prefix}_`));
+    if (group.length > 0) return group;
+    const known = [...new Set(availableTopics.map((t) => t.split("_")[0].toLowerCase()))].join(", ");
+    throw new Error(`Unknown resource "${prefix.toLowerCase()}". Known: ${known}`);
   }
 
-  throw new Error(`Unknown topic "${input}". Example: orders_create, orders_all`);
+  throw new Error(`Unknown topic "${input}". Use snake_case (orders_create) or resource_all (orders_all)`);
 }
 
 // ---- GraphQL helpers ----
@@ -94,16 +75,61 @@ export async function registerWebhooks(
 ): Promise<WebhookSubscription[]> {
   const subs: WebhookSubscription[] = [];
   for (const topic of topics) {
-    const data = await gql(store, token, CREATE_WEBHOOK, { topic, callbackUrl }) as {
-      webhookSubscriptionCreate: { webhookSubscription: { id: string }; userErrors: { message: string }[] };
-    };
-    const result = data.webhookSubscriptionCreate;
-    if (result.userErrors.length) {
-      throw new Error(`Failed to register ${topic}: ${result.userErrors.map((e) => e.message).join(", ")}`);
+    let result: { webhookSubscription: { id: string } | null; userErrors: { message: string }[] };
+    try {
+      const data = await gql(store, token, CREATE_WEBHOOK, { topic, callbackUrl }) as {
+        webhookSubscriptionCreate: typeof result;
+      };
+      result = data.webhookSubscriptionCreate;
+    } catch (e) {
+      console.warn(`  Skipped ${topic}: ${(e as Error).message}`);
+      continue;
     }
-    subs.push({ id: result.webhookSubscription.id, topic });
+    if (result.userErrors.length) {
+      console.warn(`  Skipped ${topic}: ${result.userErrors.map((e) => e.message).join(", ")}`);
+      continue;
+    }
+    subs.push({ id: result.webhookSubscription!.id, topic });
   }
+
+  if (subs.length === 0) {
+    throw new Error("No webhooks could be registered.");
+  }
+
   return subs;
+}
+
+const LIST_WEBHOOKS = `
+  query {
+    webhookSubscriptions(first: 100) {
+      edges {
+        node { id topic endpoint { __typename ... on WebhookHttpEndpoint { callbackUrl } } }
+      }
+    }
+  }
+`;
+
+export async function listWebhooks(store: string, token: string): Promise<Array<{ id: string; topic: string; callbackUrl: string }>> {
+  const data = await gql(store, token, LIST_WEBHOOKS) as {
+    webhookSubscriptions: {
+      edges: Array<{
+        node: { id: string; topic: string; endpoint: { callbackUrl?: string } };
+      }>;
+    };
+  };
+  return data.webhookSubscriptions.edges.map(({ node }) => ({
+    id: node.id,
+    topic: node.topic,
+    callbackUrl: node.endpoint.callbackUrl ?? "(unknown)",
+  }));
+}
+
+export async function pruneStaleWebhooks(store: string, token: string): Promise<number> {
+  const all = await listWebhooks(store, token);
+  const TUNNEL_DOMAINS = [".trycloudflare.com", ".loca.lt"];
+  const stale = all.filter((s) => TUNNEL_DOMAINS.some((d) => s.callbackUrl.includes(d)));
+  await deleteWebhooks(store, token, stale);
+  return stale.length;
 }
 
 export async function deleteWebhooks(store: string, token: string, subs: WebhookSubscription[]): Promise<void> {
@@ -113,6 +139,19 @@ export async function deleteWebhooks(store: string, token: string, subs: Webhook
     } catch (e) {
       console.error(`  Warning: could not delete webhook ${sub.topic}: ${(e as Error).message}`);
     }
+  }
+}
+
+const APP_ORG_QUERY = `{ currentAppInstallation { app { developerName } } }`;
+
+export async function fetchAppOrgName(store: string, token: string): Promise<string | null> {
+  try {
+    const data = await gql(store, token, APP_ORG_QUERY) as {
+      currentAppInstallation: { app: { developerName: string | null } };
+    };
+    return data.currentAppInstallation?.app?.developerName ?? null;
+  } catch {
+    return null;
   }
 }
 

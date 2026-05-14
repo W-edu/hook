@@ -7,6 +7,7 @@ const ANSI = {
   cyan: "\x1b[36m",
   yellow: "\x1b[33m",
   green: "\x1b[32m",
+  red: "\x1b[31m",
   blue: "\x1b[34m",
   magenta: "\x1b[35m",
   gray: "\x1b[90m",
@@ -38,8 +39,12 @@ export function printCompact(payload: WebhookPayload): void {
   lastIndex = ring.length - 1;
 
   const tc = topicColor(payload.topic);
+  const hmac = payload.hmacValid
+    ? `${ANSI.green}✓${ANSI.reset}`
+    : `${ANSI.red}✗ HMAC${ANSI.reset}`;
   const line =
     `${ANSI.gray}[${fmt(payload.receivedAt)}]${ANSI.reset} ` +
+    `${hmac} ` +
     `${tc}${ANSI.bold}${payload.topic.padEnd(36)}${ANSI.reset} ` +
     `${ANSI.dim}${payload.shop.padEnd(40)}${ANSI.reset} ` +
     `${ANSI.gray}(${kb(payload.body.byteLength)})${ANSI.reset}`;
@@ -114,7 +119,7 @@ function colorJson(val: unknown, depth: number): string {
   return String(val);
 }
 
-export function startInputHandler(headersOnly: boolean): () => void {
+export function startInputHandler(headersOnly: boolean, onExit: () => void, onList: () => void): () => void {
   let rawEnabled = false;
   try {
     Deno.stdin.setRaw(true);
@@ -128,6 +133,7 @@ export function startInputHandler(headersOnly: boolean): () => void {
 
   console.log(
     `${ANSI.gray}  press ${ANSI.reset}${ANSI.bold}e${ANSI.reset}${ANSI.gray} to expand last · ` +
+    `${ANSI.bold}s${ANSI.reset}${ANSI.gray} to list subscriptions · ` +
     `${ANSI.bold}q${ANSI.reset}${ANSI.gray} to quit${ANSI.reset}`,
   );
 
@@ -148,7 +154,12 @@ export function startInputHandler(headersOnly: boolean): () => void {
       // Ctrl+C / q → exit
       if (key === "\x03" || key.toLowerCase() === "q") {
         Deno.stdout.writeSync(encoder.encode("\n"));
-        Deno.exit(0);
+        onExit();
+        break;
+      }
+
+      if (key.toLowerCase() === "s") {
+        onList();
       }
 
       if (key.toLowerCase() === "e") {

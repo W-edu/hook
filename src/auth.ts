@@ -1,7 +1,7 @@
-import { getApp, setStoreApp } from "./config.ts";
+import { getApp, listStoreApps, setAppOrgName, setStoreApp } from "./config.ts";
 import { keychainDelete, keychainGet, keychainList, keychainSet } from "./keychain.ts";
 import { startServer } from "./server.ts";
-import { listStoreApps } from "./config.ts";
+import { fetchAppOrgName } from "./shopify.ts";
 
 const PORT = 57432;
 const SCOPES = [
@@ -75,6 +75,16 @@ export async function runAuth(store: string, appName = "default"): Promise<void>
 
     await keychainSet(store, token);
     await setStoreApp(store, appName);
+
+    const existingCreds = await getApp(appName);
+    if (existingCreds && !existingCreds.orgName) {
+      const orgName = await fetchAppOrgName(store, token);
+      if (orgName) {
+        await setAppOrgName(appName, orgName);
+        console.log(`Org: ${orgName}`);
+      }
+    }
+
     console.log(`Token saved for ${store} (app: ${appName})`);
   } finally {
     server.close();
@@ -111,6 +121,23 @@ export async function runAuthList(): Promise<void> {
   for (const store of keychainStores) {
     const app = appMap[store] ?? "default";
     console.log(`  ${store.padEnd(45)} app: ${app}`);
+  }
+}
+
+export async function runOrgStoreList(orgName: string): Promise<void> {
+  const [keychainStores, storeApps] = await Promise.all([keychainList(), listStoreApps()]);
+  const appMap = Object.fromEntries(storeApps.map(({ store, app }) => [store, app]));
+
+  const stores = keychainStores.filter((store) => (appMap[store] ?? "default") === orgName);
+
+  if (stores.length === 0) {
+    console.log(`No authenticated stores for org "${orgName}".`);
+    return;
+  }
+
+  console.log(`Stores under "${orgName}":`);
+  for (const store of stores) {
+    console.log(`  ${store}`);
   }
 }
 

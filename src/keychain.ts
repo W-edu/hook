@@ -52,6 +52,14 @@ export async function keychainDelete(store: string): Promise<void> {
   if (code !== 0) throw new KeychainError("Unknown", `keychain delete failed: ${stderr}`);
 }
 
+export async function keychainDeleteAll(): Promise<string[]> {
+  const stores = await keychainList();
+  for (const store of stores) {
+    await keychainDelete(store);
+  }
+  return stores;
+}
+
 export async function keychainList(): Promise<string[]> {
   // Dump all generic passwords for this service and parse account names
   const cmd = new Deno.Command("security", {

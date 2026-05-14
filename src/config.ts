@@ -4,6 +4,8 @@ import { ensureDir } from "https://deno.land/std@0.224.0/fs/mod.ts";
 export interface AppCredentials {
   clientId: string;
   clientSecret: string;
+  displayName?: string;
+  orgName?: string;
 }
 
 interface Config {
@@ -54,9 +56,17 @@ export async function setStoreApp(store: string, appName: string): Promise<void>
   await writeRaw(config);
 }
 
-export async function listApps(): Promise<Array<{ name: string; clientId: string }>> {
+export async function setAppOrgName(appName: string, orgName: string): Promise<void> {
   const config = await readRaw();
-  return Object.entries(config.apps).map(([name, { clientId }]) => ({ name, clientId }));
+  if (config.apps[appName]) {
+    config.apps[appName].orgName = orgName;
+    await writeRaw(config);
+  }
+}
+
+export async function listApps(): Promise<Array<{ name: string; clientId: string; displayName?: string; orgName?: string }>> {
+  const config = await readRaw();
+  return Object.entries(config.apps).map(([name, { clientId, displayName, orgName }]) => ({ name, clientId, displayName, orgName }));
 }
 
 export async function listStoreApps(): Promise<Array<{ store: string; app: string }>> {
@@ -80,18 +90,35 @@ async function prompt(message: string, hidden = false): Promise<string> {
   return new TextDecoder().decode(buf.subarray(0, n ?? 0)).trim();
 }
 
+export async function deleteConfig(): Promise<boolean> {
+  const path = configPath();
+  try {
+    await Deno.remove(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function runSetup(appName = "default"): Promise<void> {
   console.log(`Shopify app credentials for "${appName}" (Partner Dashboard → App → Client credentials)\n`);
+  const displayName = await prompt("App display name (optional): ");
   const clientId = await prompt("Client ID:     ");
   const clientSecret = await prompt("Client secret: ", true);
 
   if (!clientId || !clientSecret) {
-    console.error("Aborted — both fields required.");
+    console.error("Aborted — client ID and secret required.");
     Deno.exit(1);
   }
 
   const config = await readRaw();
-  config.apps[appName] = { clientId, clientSecret };
+  const existing = config.apps[appName] ?? {};
+  config.apps[appName] = {
+    ...existing,
+    clientId,
+    clientSecret,
+    ...(displayName ? { displayName } : {}),
+  };
   await writeRaw(config);
   console.log(`App "${appName}" saved to ${configPath()}`);
 }
@@ -103,7 +130,9 @@ export async function runSetupList(): Promise<void> {
     return;
   }
   console.log("Configured apps:");
-  for (const { name, clientId } of apps) {
-    console.log(`  ${name.padEnd(20)} client_id: ${clientId}`);
+  for (const { name, displayName, orgName, clientId } of apps) {
+    const label = displayName ? `${displayName} (${name})` : name;
+    const org = orgName ? `  org: ${orgName}` : "";
+    console.log(`  ${label.padEnd(36)} client_id: ${clientId}${org}`);
   }
 }

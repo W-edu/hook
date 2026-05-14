@@ -6,6 +6,7 @@ export interface WebhookPayload {
   headers: Record<string, string>;
   body: Uint8Array;
   receivedAt: Date;
+  hmacValid: boolean;
 }
 
 export type WebhookHandler = (payload: WebhookPayload) => void;
@@ -38,8 +39,7 @@ export function startServer(opts: ServerOptions): Server {
       const body = new Uint8Array(await req.arrayBuffer());
       const hmac = req.headers.get("x-shopify-hmac-sha256") ?? "";
 
-      const valid = await verifyHmac(body, hmac, opts.clientSecret);
-      if (!valid) return new Response("Unauthorized", { status: 401 });
+      const hmacValid = await verifyHmac(body, hmac, opts.clientSecret);
 
       const headers: Record<string, string> = {};
       req.headers.forEach((v, k) => { headers[k] = v; });
@@ -50,9 +50,10 @@ export function startServer(opts: ServerOptions): Server {
         headers,
         body,
         receivedAt: new Date(),
+        hmacValid,
       });
 
-      return new Response("OK", { status: 200 });
+      return new Response("OK", { status: hmacValid ? 200 : 401 });
     }
 
     return new Response("Not Found", { status: 404 });
