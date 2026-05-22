@@ -21,7 +21,7 @@ A CLI for intercepting Shopify webhooks locally. Opens a secure [cloudflared](ht
 ## Install
 
 ```bash
-/bin/sh -c "$(curl -fsSL https://raw.githubusercontent.com/W-edu/hook/main/install.sh)"
+/bin/sh -c "$(curl -fsSL https://raw.githubusercontent.com/W-edu/hook/master/install.sh)"
 ```
 
 The script will:
