@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-REPO="alecswanky/hook"
+REPO="W-edu/hook"
 BINARY="hook"
 
 # prefer /usr/local/bin (always on PATH on Mac), fall back to ~/.local/bin
